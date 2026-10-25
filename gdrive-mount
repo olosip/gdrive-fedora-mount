@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # gdrive-mount: monta Google Drive in una cartella con rclone e systemd --user.
 # Pensato per Fedora 44+, dove gvfs non include più il backend Google Drive.
+# Il montaggio segue l'account Google di Impostazioni → Account online: c'è solo se c'è l'account.
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 REMOTE="${GDRIVE_REMOTE:-gdrive}"
 MOUNT_DIR="${GDRIVE_DIR:-$HOME/GoogleDrive}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+UNIT_DIR="$CONFIG_HOME/systemd/user"
 UNIT_NAME="gdrive-mount.service"
-UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_FILE="$UNIT_DIR/$UNIT_NAME"
-BOOKMARKS="${XDG_CONFIG_HOME:-$HOME/.config}/gtk-3.0/bookmarks"
+WATCH_NAME="gdrive-mount-goa.path"
+WATCH_FILE="$UNIT_DIR/$WATCH_NAME"
+SYNC_NAME="gdrive-mount-goa.service"
+SYNC_FILE="$UNIT_DIR/$SYNC_NAME"
+GOA_DIR="$CONFIG_HOME/goa-1.0"
+GOA_CONF="$GOA_DIR/accounts.conf"
+# Versioni precedenti aggiungevano un segnalibro; ora il montaggio compare già come volume
+BOOKMARKS="$CONFIG_HOME/gtk-3.0/bookmarks"
 BOOKMARK_LINE="file://$MOUNT_DIR Google Drive"
 RCLONE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/rclone"
 
@@ -33,18 +42,51 @@ remote_exists() {
     rclone listremotes 2>/dev/null | grep -qx "$REMOTE:"
 }
 
-write_unit() {
+goa_google_accounts() {
+    # Elenca le identità (email) degli account Google configurati in Account online
+    [[ -f "$GOA_CONF" ]] || return 0
+    awk -F= '
+        /^\[/ { if (p == "google" && id != "") print id; p = ""; id = "" }
+        $1 == "Provider" { p = $2 }
+        $1 == "Identity" { id = substr($0, index($0, "=") + 1) }
+        END { if (p == "google" && id != "") print id }
+    ' "$GOA_CONF"
+}
+
+linked_account() {
+    # L'account a cui è legato il montaggio: GDRIVE_ACCOUNT, altrimenti il primo account Google
+    if [[ -n "${GDRIVE_ACCOUNT:-}" ]]; then
+        printf '%s\n' "$GDRIVE_ACCOUNT"
+    else
+        goa_google_accounts | head -n1
+    fi
+}
+
+has_account() {
+    local account
+    account="$(linked_account)"
+    [[ -n "$account" ]] && goa_google_accounts | grep -qxF "$account"
+}
+
+write_units() {
+    local self rclone_bin account
+    self="$(readlink -f "$0")"
+    rclone_bin="$(command -v rclone)"
+    account="$(linked_account)"
     mkdir -p "$UNIT_DIR"
+
     cat > "$UNIT_FILE" <<EOF
 [Unit]
-Description=Google Drive montato in $MOUNT_DIR (rclone)
+Description=Google Drive di $account montato in $MOUNT_DIR (rclone)
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=notify
+Environment="GDRIVE_ACCOUNT=$account" "GDRIVE_REMOTE=$REMOTE" "GDRIVE_DIR=$MOUNT_DIR"
+ExecCondition=$self has-account
 ExecStartPre=/usr/bin/mkdir -p $MOUNT_DIR
-ExecStart=$(command -v rclone) mount $REMOTE: $MOUNT_DIR --vfs-cache-mode full --vfs-cache-max-size 5G --vfs-cache-max-age 24h --dir-cache-time 5m --poll-interval 1m
+ExecStart=$rclone_bin mount $REMOTE: $MOUNT_DIR --vfs-cache-mode full --vfs-cache-max-size 5G --vfs-cache-max-age 24h --dir-cache-time 5m --poll-interval 1m
 ExecStop=/usr/bin/fusermount3 -uz $MOUNT_DIR
 Restart=on-failure
 RestartSec=30
@@ -52,16 +94,33 @@ RestartSec=30
 [Install]
 WantedBy=default.target
 EOF
-}
 
-add_bookmark() {
-    mkdir -p "$(dirname "$BOOKMARKS")"
-    touch "$BOOKMARKS"
-    grep -qxF "$BOOKMARK_LINE" "$BOOKMARKS" || printf '%s\n' "$BOOKMARK_LINE" >> "$BOOKMARKS"
+    cat > "$WATCH_FILE" <<EOF
+[Unit]
+Description=Segue gli account di Account online per il montaggio di Google Drive
+
+[Path]
+PathChanged=$GOA_DIR
+Unit=$SYNC_NAME
+
+[Install]
+WantedBy=default.target
+EOF
+
+    cat > "$SYNC_FILE" <<EOF
+[Unit]
+Description=Allinea il montaggio di Google Drive all'account di Account online
+
+[Service]
+Type=oneshot
+Environment="GDRIVE_ACCOUNT=$account" "GDRIVE_REMOTE=$REMOTE" "GDRIVE_DIR=$MOUNT_DIR"
+ExecStart=$self sync
+EOF
 }
 
 remove_bookmark() {
     [[ -f "$BOOKMARKS" ]] || return 0
+    grep -qxF "$BOOKMARK_LINE" "$BOOKMARKS" || return 0
     local tmp
     tmp="$(mktemp)"
     grep -vxF "$BOOKMARK_LINE" "$BOOKMARKS" > "$tmp" || true
@@ -72,6 +131,16 @@ remove_bookmark() {
 unmount_dir() {
     if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
         fusermount3 -uz "$MOUNT_DIR" || true
+    fi
+}
+
+clean_local() {
+    # Cache VFS di rclone per questo remote e cartella di montaggio (solo se vuota:
+    # non cancello mai file dell'utente)
+    rm -rf "$RCLONE_CACHE/vfs/$REMOTE" "$RCLONE_CACHE/vfsMeta/$REMOTE"
+    rmdir "$RCLONE_CACHE/vfs" "$RCLONE_CACHE/vfsMeta" "$RCLONE_CACHE" 2>/dev/null || true
+    if [[ -d "$MOUNT_DIR" ]]; then
+        rmdir "$MOUNT_DIR" 2>/dev/null || msg "Attenzione: $MOUNT_DIR non è vuota, la lascio dov'è."
     fi
 }
 
@@ -106,7 +175,7 @@ cmd_set_client() {
     msg "Si aprirà il browser: accedi di nuovo e autorizza la tua app."
     # update rifà anche l'autorizzazione OAuth col nuovo client; l'output contiene il token
     rclone config update "$REMOTE" client_id "$id" client_secret "$secret" >/dev/null
-    if [[ -f "$UNIT_FILE" ]]; then
+    if [[ -f "$UNIT_FILE" ]] && has_account; then
         systemctl --user restart "$UNIT_NAME"
     fi
     rclone lsd "$REMOTE:" --max-depth 1 >/dev/null && msg "Ora rclone usa il tuo client_id."
@@ -115,28 +184,51 @@ cmd_set_client() {
 cmd_enable() {
     need_rclone
     remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-mount setup"
+    has_account || die "nessun account Google${GDRIVE_ACCOUNT:+ $GDRIVE_ACCOUNT} in Impostazioni → Account online. Aggiungilo e riprova."
+    local account
+    account="$(linked_account)"
     mkdir -p "$MOUNT_DIR"
-    write_unit
+    write_units
     systemctl --user daemon-reload
-    systemctl --user enable --now "$UNIT_NAME"
-    add_bookmark
-    msg "Google Drive è montato in $MOUNT_DIR e verrà montato a ogni accesso."
+    systemctl --user enable "$UNIT_NAME" "$WATCH_NAME"
+    systemctl --user start "$WATCH_NAME"
+    systemctl --user restart "$UNIT_NAME"
+    remove_bookmark
+    msg "Google Drive di $account è montato in $MOUNT_DIR (compare tra i volumi nella Gestione file)."
+    msg "Se rimuovi l'account da Account online, il Drive viene smontato e la cache pulita."
+}
+
+cmd_sync() {
+    # Lanciato da gdrive-mount-goa.path quando cambiano gli account di Account online
+    if has_account; then
+        systemctl --user start "$UNIT_NAME"
+    else
+        systemctl --user stop "$UNIT_NAME" || true
+        unmount_dir
+        clean_local
+        msg "Account Google non presente in Account online: Google Drive smontato e cache pulita."
+    fi
 }
 
 cmd_disable() {
-    if [[ -f "$UNIT_FILE" ]]; then
-        systemctl --user disable --now "$UNIT_NAME" || true
-    fi
+    local u
+    for u in "$WATCH_NAME" "$UNIT_NAME"; do
+        [[ -f "$UNIT_DIR/$u" ]] && { systemctl --user disable --now "$u" || true; }
+    done
     unmount_dir
     remove_bookmark
     msg "Montaggio automatico disattivato."
 }
 
 cmd_status() {
+    local account
+    account="$(linked_account)"
+    msg "account:    ${account:-nessun account Google} ($(has_account && echo presente in Account online || echo assente))"
     msg "remote:     $REMOTE ($(command -v rclone >/dev/null && remote_exists && echo configurato || echo non configurato))"
     msg "cartella:   $MOUNT_DIR ($(mountpoint -q "$MOUNT_DIR" 2>/dev/null && echo montata || echo non montata))"
     if [[ -f "$UNIT_FILE" ]]; then
         msg "servizio:   $(systemctl --user is-enabled "$UNIT_NAME" 2>/dev/null || true), $(systemctl --user is-active "$UNIT_NAME" 2>/dev/null || true)"
+        msg "controllo:  $(systemctl --user is-enabled "$WATCH_NAME" 2>/dev/null || true), $(systemctl --user is-active "$WATCH_NAME" 2>/dev/null || true)"
     else
         msg "servizio:   non installato"
     fi
@@ -144,20 +236,16 @@ cmd_status() {
 
 cmd_uninstall() {
     cmd_disable
-    if [[ -f "$UNIT_FILE" ]]; then
-        rm -f "$UNIT_FILE"
+    local u removed=0
+    for u in "$UNIT_FILE" "$WATCH_FILE" "$SYNC_FILE"; do
+        [[ -f "$u" ]] && { rm -f "$u"; removed=1; }
+    done
+    if (( removed )); then
         systemctl --user daemon-reload
-        systemctl --user reset-failed "$UNIT_NAME" 2>/dev/null || true
+        systemctl --user reset-failed "$UNIT_NAME" "$WATCH_NAME" "$SYNC_NAME" 2>/dev/null || true
     fi
 
-    # La cartella di montaggio si toglie solo se è vuota: non cancello mai file dell'utente.
-    if [[ -d "$MOUNT_DIR" ]]; then
-        rmdir "$MOUNT_DIR" 2>/dev/null || msg "Attenzione: $MOUNT_DIR non è vuota, la lascio dov'è."
-    fi
-
-    # Cache VFS di rclone per questo remote
-    rm -rf "$RCLONE_CACHE/vfs/$REMOTE" "$RCLONE_CACHE/vfsMeta/$REMOTE"
-    rmdir "$RCLONE_CACHE/vfs" "$RCLONE_CACHE/vfsMeta" "$RCLONE_CACHE" 2>/dev/null || true
+    clean_local
 
     if command -v rclone >/dev/null 2>&1 && remote_exists; then
         if ask "Rimuovere anche l'autorizzazione di rclone a Google Drive (remote '$REMOTE')?"; then
@@ -192,14 +280,16 @@ gdrive-mount $VERSION - Google Drive come cartella su Fedora (rclone + systemd)
 Uso: gdrive-mount <comando>
 
 Comandi:
-  setup       collega rclone al tuo account Google (si apre il browser)
-  set-client  passa a un client_id Google tuo (chiede ID e secret)
-  enable      monta Google Drive in $MOUNT_DIR e lo rimonta a ogni accesso
-  disable     smonta e disattiva il montaggio automatico
-  status      mostra lo stato
-  uninstall   rimuove servizio, segnalibro, cache e (a scelta) l'autorizzazione
+  setup        collega rclone al tuo account Google (si apre il browser)
+  set-client   passa a un client_id Google tuo (chiede ID e secret)
+  enable       monta Google Drive in $MOUNT_DIR finché l'account Google
+               è presente in Impostazioni → Account online
+  disable      smonta e disattiva il montaggio automatico
+  status       mostra lo stato
+  uninstall    rimuove servizi, cache e (a scelta) l'autorizzazione
 
-Variabili: GDRIVE_REMOTE (predefinito: gdrive), GDRIVE_DIR (predefinito: ~/GoogleDrive)
+Variabili: GDRIVE_ACCOUNT (predefinito: il primo account Google di Account online),
+           GDRIVE_REMOTE (predefinito: gdrive), GDRIVE_DIR (predefinito: ~/GoogleDrive)
 EOF
 }
 
@@ -210,6 +300,8 @@ case "${1:-}" in
     disable) cmd_disable ;;
     status) cmd_status ;;
     uninstall) cmd_uninstall ;;
+    sync) cmd_sync ;;
+    has-account) has_account ;;
     -h|--help|help|"") usage ;;
     --version) msg "$VERSION" ;;
     *) usage >&2; exit 2 ;;

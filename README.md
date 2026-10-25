@@ -1,6 +1,8 @@
 # gdrive-mount
 
-Google Drive come una normale cartella su Fedora, con un segnalibro in Gestione file (Nautilus).
+Google Drive come una normale cartella su Fedora, legato all'account Google di
+**Impostazioni → Account online**: compare tra i volumi della Gestione file finché l'account c'è,
+e sparisce (con la cache pulita) quando lo rimuovi.
 
 ## Perché
 
@@ -19,22 +21,37 @@ Fedora e non sostituisce nessun pacchetto di sistema.
 sudo dnf install rclone
 ./install.sh
 gdrive-mount setup     # si apre il browser: accedi a Google e autorizza rclone
-gdrive-mount enable    # monta in ~/GoogleDrive e aggiunge il segnalibro "Google Drive"
+gdrive-mount enable    # monta in ~/GoogleDrive
 ```
 
-Il montaggio parte da solo a ogni accesso (servizio `systemd --user` chiamato `gdrive-mount.service`).
+Serve un account Google in Impostazioni → Account online (basta che ci sia, anche con solo Email
+attiva). Il montaggio parte a ogni accesso solo se l'account è presente.
+
+## Come funziona il legame con Account online
+
+- `gdrive-mount.service` monta il Drive con rclone; prima di partire controlla (`ExecCondition`)
+  che l'account Google sia in Account online.
+- `gdrive-mount-goa.path` sorveglia `~/.config/goa-1.0/`: quando aggiungi o rimuovi un account
+  lancia `gdrive-mount-goa.service`, che monta o smonta di conseguenza. Alla rimozione pulisce
+  anche la cache locale e la cartella `~/GoogleDrive` se è vuota.
+- Il montaggio è legato a un account preciso (il primo account Google, oppure `GDRIVE_ACCOUNT`).
+
+L'autorizzazione di rclone resta però separata da quella di GNOME: l'interruttore **File** in
+Account online non compare, perché lo mostra solo il backend gvfs che Fedora ha tolto. Rimuovere
+l'account da Account online non revoca l'accesso di rclone: per quello usa `gdrive-mount uninstall`.
 
 ## Comandi
 
 | Comando | Cosa fa |
 |---|---|
 | `gdrive-mount setup` | collega rclone all'account Google (remote `gdrive`) |
-| `gdrive-mount enable` | crea e avvia il servizio, aggiunge il segnalibro |
-| `gdrive-mount disable` | smonta, ferma il servizio, toglie il segnalibro |
+| `gdrive-mount enable` | crea i servizi e monta, se l'account è in Account online |
+| `gdrive-mount disable` | smonta e disattiva i servizi |
 | `gdrive-mount status` | mostra lo stato |
 | `gdrive-mount uninstall` | rimuove tutto, vedi sotto |
 
-Si possono cambiare il nome del remote e la cartella con `GDRIVE_REMOTE` e `GDRIVE_DIR`.
+Si possono cambiare account, nome del remote e cartella con `GDRIVE_ACCOUNT`, `GDRIVE_REMOTE` e
+`GDRIVE_DIR`.
 
 ## Disinstallazione senza residui
 
@@ -42,7 +59,7 @@ Si possono cambiare il nome del remote e la cartella con `GDRIVE_REMOTE` e `GDRI
 gdrive-mount uninstall
 ```
 
-Rimuove servizio, segnalibro, cache di rclone per questo remote, la cartella `~/GoogleDrive` (solo se
+Rimuove i servizi, la cache di rclone per questo remote, la cartella `~/GoogleDrive` (solo se
 vuota: i tuoi file non vengono mai cancellati), lo script stesso e, se confermi, l'autorizzazione di
 rclone. Se rclone non ti serve per altro:
 
@@ -78,4 +95,4 @@ bash tests/run.sh
 ```
 
 I test non usano la rete né il tuo account: rclone e systemctl vengono sostituiti da comandi finti
-in una home temporanea, e si verifica che dopo `uninstall` la home sia identica a prima.
+in una home temporanea, e si verifica il legame con Account online e che dopo `uninstall` la home sia identica a prima.
