@@ -45,6 +45,7 @@ l'account da Account online non revoca l'accesso di rclone: per quello usa `gdri
 | Comando | Cosa fa |
 |---|---|
 | `gdrive-mount setup` | collega rclone all'account Google (remote `gdrive`) |
+| `gdrive-mount set-client` | passa a un client_id Google tuo (vedi sotto) |
 | `gdrive-mount enable` | crea i servizi e monta, se l'account è in Account online |
 | `gdrive-mount disable` | smonta e disattiva i servizi |
 | `gdrive-mount status` | mostra lo stato |
