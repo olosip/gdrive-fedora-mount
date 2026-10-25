@@ -59,8 +59,8 @@ EOF
 before="$(snapshot)"
 
 bash "$root/install.sh" >/dev/null
-[[ -x "$HOME/.local/bin/gdrive-mount" ]] || fail "script non installato"
-gdm="$HOME/.local/bin/gdrive-mount"
+[[ -x "$HOME/.local/bin/gdrive-fedora-mount" ]] || fail "script non installato"
+gdm="$HOME/.local/bin/gdrive-fedora-mount"
 
 "$gdm" enable 2>/dev/null && fail "enable dovrebbe fallire senza remote"
 "$gdm" setup >/dev/null
@@ -69,21 +69,28 @@ gdm="$HOME/.local/bin/gdrive-mount"
 
 add_google
 "$gdm" has-account || fail "account Google non rilevato"
+# Installazione precedente col vecchio nome (gdrive-mount): enable deve toglierla
+printf '[Unit]\n' > "$HOME/.config/systemd/user/gdrive-mount.service"
+printf '[Path]\n' > "$HOME/.config/systemd/user/gdrive-mount-goa.path"
+printf '#!/bin/sh\n' > "$HOME/.local/bin/gdrive-mount"
 calls >/dev/null
 "$gdm" enable >/dev/null
+for f in .config/systemd/user/gdrive-mount.service .config/systemd/user/gdrive-mount-goa.path .local/bin/gdrive-mount; do
+    [[ -e "$HOME/$f" ]] && fail "residuo della versione precedente: $f"
+done
 
-unit="$HOME/.config/systemd/user/gdrive-mount.service"
+unit="$HOME/.config/systemd/user/gdrive-fedora-mount.service"
 [[ -f "$unit" ]] || fail "unit non creata"
 grep -q "mount gdrive: $HOME/GoogleDrive" "$unit" || fail "comando mount errato"
 grep -q "GDRIVE_ACCOUNT=io@gmail.com" "$unit" || fail "account non legato al servizio"
 grep -q "ExecCondition=$gdm has-account" "$unit" || fail "manca il controllo dell'account"
-grep -qx "PathChanged=$HOME/.config/goa-1.0" "$HOME/.config/systemd/user/gdrive-mount-goa.path" || fail "unità path errata"
-grep -qx "ExecStart=$gdm sync" "$HOME/.config/systemd/user/gdrive-mount-goa.service" || fail "unità sync errata"
+grep -qx "PathChanged=$HOME/.config/goa-1.0" "$HOME/.config/systemd/user/gdrive-fedora-mount-goa.path" || fail "unità path errata"
+grep -qx "ExecStart=$gdm sync" "$HOME/.config/systemd/user/gdrive-fedora-mount-goa.service" || fail "unità sync errata"
 [[ -d "$HOME/GoogleDrive" ]] || fail "cartella di montaggio mancante"
 grep -q GoogleDrive "$HOME/.config/gtk-3.0/bookmarks" && fail "non deve più aggiungere segnalibri"
 c="$(calls)"
-grep -q "enable gdrive-mount.service gdrive-mount-goa.path" <<< "$c" || fail "servizi non abilitati"
-grep -q "restart gdrive-mount.service" <<< "$c" || fail "montaggio non avviato"
+grep -q "enable gdrive-fedora-mount.service gdrive-fedora-mount-goa.path" <<< "$c" || fail "servizi non abilitati"
+grep -q "restart gdrive-fedora-mount.service" <<< "$c" || fail "montaggio non avviato"
 
 # Il vecchio segnalibro delle versioni precedenti viene tolto
 printf 'file://%s/GoogleDrive Google Drive\n' "$HOME" >> "$HOME/.config/gtk-3.0/bookmarks"
@@ -94,18 +101,18 @@ grep -q GoogleDrive "$HOME/.config/gtk-3.0/bookmarks" && fail "vecchio segnalibr
 printf 'mio-id\nmio-secret\n' | "$gdm" set-client >/dev/null 2>&1
 grep -qx 'client_id = mio-id' "$HOME/.config/rclone/rclone.conf" || fail "client_id non salvato"
 grep -qx 'client_secret = mio-secret' "$HOME/.config/rclone/rclone.conf" || fail "client_secret non salvato"
-grep -q "restart gdrive-mount.service" <<< "$(calls)" || fail "servizio non riavviato"
+grep -q "restart gdrive-fedora-mount.service" <<< "$(calls)" || fail "servizio non riavviato"
 
 # Account presente: sync avvia il montaggio
 GDRIVE_ACCOUNT=io@gmail.com "$gdm" sync >/dev/null
-grep -q "start gdrive-mount.service" <<< "$(calls)" || fail "sync non avvia il montaggio"
+grep -q "start gdrive-fedora-mount.service" <<< "$(calls)" || fail "sync non avvia il montaggio"
 
 # Account rimosso da Account online: sync smonta e pulisce
 mkdir -p "$HOME/.cache/rclone/vfs/gdrive/x" "$HOME/.cache/rclone/vfsMeta/gdrive"
 sed -i '/^\[Account account_2_3\]/,$d' "$goa"
 GDRIVE_ACCOUNT=io@gmail.com "$gdm" has-account && fail "account rimosso ancora visto"
 GDRIVE_ACCOUNT=io@gmail.com "$gdm" sync >/dev/null
-grep -q "stop gdrive-mount.service" <<< "$(calls)" || fail "sync non ferma il montaggio"
+grep -q "stop gdrive-fedora-mount.service" <<< "$(calls)" || fail "sync non ferma il montaggio"
 [[ -e "$HOME/.cache/rclone" ]] && fail "cache non pulita"
 [[ -e "$HOME/GoogleDrive" ]] && fail "cartella vuota non rimossa"
 

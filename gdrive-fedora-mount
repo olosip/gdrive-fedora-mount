@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# gdrive-mount: monta Google Drive in una cartella con rclone e systemd --user.
+# gdrive-fedora-mount: monta Google Drive in una cartella con rclone e systemd --user.
 # Pensato per Fedora 44+, dove gvfs non include più il backend Google Drive.
 # Il montaggio segue l'account Google di Impostazioni → Account online: c'è solo se c'è l'account.
 set -euo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 REMOTE="${GDRIVE_REMOTE:-gdrive}"
 MOUNT_DIR="${GDRIVE_DIR:-$HOME/GoogleDrive}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
-UNIT_NAME="gdrive-mount.service"
+UNIT_NAME="gdrive-fedora-mount.service"
 UNIT_FILE="$UNIT_DIR/$UNIT_NAME"
-WATCH_NAME="gdrive-mount-goa.path"
+WATCH_NAME="gdrive-fedora-mount-goa.path"
 WATCH_FILE="$UNIT_DIR/$WATCH_NAME"
-SYNC_NAME="gdrive-mount-goa.service"
+SYNC_NAME="gdrive-fedora-mount-goa.service"
 SYNC_FILE="$UNIT_DIR/$SYNC_NAME"
 GOA_DIR="$CONFIG_HOME/goa-1.0"
 GOA_CONF="$GOA_DIR/accounts.conf"
@@ -128,6 +128,27 @@ remove_bookmark() {
     rm -f "$tmp"
 }
 
+remove_legacy() {
+    # Fino alla 0.2 lo strumento si chiamava gdrive-mount: tolgo servizi e script col vecchio nome
+    local u found=0
+    for u in gdrive-mount-goa.path gdrive-mount.service gdrive-mount-goa.service; do
+        if [[ -f "$UNIT_DIR/$u" ]]; then
+            systemctl --user disable --now "$u" 2>/dev/null || true
+            rm -f "$UNIT_DIR/$u"
+            found=1
+        fi
+    done
+    if (( found )); then
+        systemctl --user daemon-reload
+        systemctl --user reset-failed gdrive-mount.service gdrive-mount-goa.path gdrive-mount-goa.service 2>/dev/null || true
+        msg "Rimossi i servizi della versione precedente (gdrive-mount)."
+    fi
+    if [[ -f "$HOME/.local/bin/gdrive-mount" ]]; then
+        rm -f "$HOME/.local/bin/gdrive-mount"
+        msg "Rimosso il vecchio script $HOME/.local/bin/gdrive-mount."
+    fi
+}
+
 unmount_dir() {
     if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
         fusermount3 -uz "$MOUNT_DIR" || true
@@ -165,7 +186,7 @@ cmd_setup() {
 
 cmd_set_client() {
     need_rclone
-    remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-mount setup"
+    remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-fedora-mount setup"
     local id secret
     read -r -p "Client ID: " id
     # Il secret non viene mostrato né salvato nella cronologia della shell
@@ -183,10 +204,11 @@ cmd_set_client() {
 
 cmd_enable() {
     need_rclone
-    remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-mount setup"
+    remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-fedora-mount setup"
     has_account || die "nessun account Google${GDRIVE_ACCOUNT:+ $GDRIVE_ACCOUNT} in Impostazioni → Account online. Aggiungilo e riprova."
     local account
     account="$(linked_account)"
+    remove_legacy
     mkdir -p "$MOUNT_DIR"
     write_units
     systemctl --user daemon-reload
@@ -199,7 +221,7 @@ cmd_enable() {
 }
 
 cmd_sync() {
-    # Lanciato da gdrive-mount-goa.path quando cambiano gli account di Account online
+    # Lanciato da gdrive-fedora-mount-goa.path quando cambiano gli account di Account online
     if has_account; then
         systemctl --user start "$UNIT_NAME"
     else
@@ -236,6 +258,7 @@ cmd_status() {
 
 cmd_uninstall() {
     cmd_disable
+    remove_legacy
     local u removed=0
     for u in "$UNIT_FILE" "$WATCH_FILE" "$SYNC_FILE"; do
         [[ -f "$u" ]] && { rm -f "$u"; removed=1; }
@@ -262,7 +285,7 @@ cmd_uninstall() {
 
     local self
     self="$(readlink -f "$0")"
-    if [[ "$self" == "$HOME/.local/bin/gdrive-mount" ]]; then
+    if [[ "$self" == "$HOME/.local/bin/gdrive-fedora-mount" ]]; then
         rm -f "$self"
         msg "Rimosso $self."
     fi
@@ -275,9 +298,9 @@ cmd_uninstall() {
 
 usage() {
     cat <<EOF
-gdrive-mount $VERSION - Google Drive come cartella su Fedora (rclone + systemd)
+gdrive-fedora-mount $VERSION - Google Drive come cartella su Fedora (rclone + systemd)
 
-Uso: gdrive-mount <comando>
+Uso: gdrive-fedora-mount <comando>
 
 Comandi:
   setup        collega rclone al tuo account Google (si apre il browser)

@@ -1,103 +1,115 @@
-# gdrive-mount
+# gdrive-fedora-mount
 
-Google Drive come una normale cartella su Fedora, legato all'account Google di
-**Impostazioni → Account online**: compare tra i volumi della Gestione file finché l'account c'è,
-e sparisce (con la cache pulita) quando lo rimuovi.
+Google Drive as a regular folder on Fedora, tied to the Google account in
+**Settings → Online Accounts**: it shows up as a volume in Files (Nautilus) while the account
+exists, and disappears (cache cleared) when you remove it.
 
-## Perché
+## Why
 
-Da GNOME 50 (Fedora 44, Ubuntu 26.04) gvfs non include più il backend Google Drive: la libreria
-`libgdata` su cui si basava non ha più un manutentore. Per questo in **Impostazioni → Account online**
-l'account Google non mostra più l'opzione **File**.
+Since GNOME 50 (Fedora 44, Ubuntu 26.04), gvfs no longer ships its Google Drive backend: the
+`libgdata` library it relied on has been unmaintained for years and is now archived. That's why,
+in **Settings → Online Accounts**, the Google account no longer offers the **Files** switch
+(Microsoft 365 still does).
 
-È in revisione una nuova implementazione ufficiale
-([GNOME/gvfs!323](https://gitlab.gnome.org/GNOME/gvfs/-/merge_requests/323), milestone GNOME 52,
-quindi al più presto Fedora 46). Nel frattempo questo strumento usa **rclone**, che è nei repository
-Fedora e non sostituisce nessun pacchetto di sistema.
+You can check it on your system: `/usr/libexec/gvfsd-onedrive` exists, `gvfsd-google` doesn't.
+Fedora's `gvfs` changelog (2026-02-18) says: *"Drop support for unmaintained libgdata"*.
 
-## Installazione
+A new official implementation is under review
+([GNOME/gvfs!323](https://gitlab.gnome.org/GNOME/gvfs/-/merge_requests/323), milestone GNOME 52),
+so not before Fedora 46. Meanwhile this tool uses **rclone**, which is in the official Fedora
+repositories, and doesn't replace any system package.
+
+## Installation
 
 ```bash
 sudo dnf install rclone
+git clone https://github.com/olosip/gdrive-fedora-mount.git
+cd gdrive-fedora-mount
 ./install.sh
-gdrive-mount setup     # si apre il browser: accedi a Google e autorizza rclone
-gdrive-mount enable    # monta in ~/GoogleDrive
+gdrive-fedora-mount setup     # opens the browser: sign in to Google and authorize rclone
+gdrive-fedora-mount enable    # mounts at ~/GoogleDrive
 ```
 
-Serve un account Google in Impostazioni → Account online (basta che ci sia, anche con solo Email
-attiva). Il montaggio parte a ogni accesso solo se l'account è presente.
+You need a Google account in Settings → Online Accounts (just having it is enough, even with only
+Mail enabled). At every login the mount starts only if the account is there.
 
-## Come funziona il legame con Account online
+## How the Online Accounts link works
 
-- `gdrive-mount.service` monta il Drive con rclone; prima di partire controlla (`ExecCondition`)
-  che l'account Google sia in Account online.
-- `gdrive-mount-goa.path` sorveglia `~/.config/goa-1.0/`: quando aggiungi o rimuovi un account
-  lancia `gdrive-mount-goa.service`, che monta o smonta di conseguenza. Alla rimozione pulisce
-  anche la cache locale e la cartella `~/GoogleDrive` se è vuota.
-- Il montaggio è legato a un account preciso (il primo account Google, oppure `GDRIVE_ACCOUNT`).
+- `gdrive-fedora-mount.service` mounts the Drive with rclone; before starting it checks
+  (`ExecCondition`) that the Google account is in Online Accounts.
+- `gdrive-fedora-mount-goa.path` watches `~/.config/goa-1.0/`: when you add or remove an account it
+  runs `gdrive-fedora-mount-goa.service`, which mounts or unmounts accordingly. On removal it also
+  clears the local cache and `~/GoogleDrive` if empty.
+- The mount is tied to one specific account (the first Google account, or `GDRIVE_ACCOUNT`).
 
-L'autorizzazione di rclone resta però separata da quella di GNOME: l'interruttore **File** in
-Account online non compare, perché lo mostra solo il backend gvfs che Fedora ha tolto. Rimuovere
-l'account da Account online non revoca l'accesso di rclone: per quello usa `gdrive-mount uninstall`.
+rclone's authorization is still separate from GNOME's: the **Files** switch in Online Accounts
+won't reappear, because only the gvfs backend Fedora removed can provide it. Removing the account
+from Online Accounts doesn't revoke rclone's access: use `gdrive-fedora-mount uninstall` for that.
 
-## Comandi
+## Commands
 
-| Comando | Cosa fa |
+| Command | What it does |
 |---|---|
-| `gdrive-mount setup` | collega rclone all'account Google (remote `gdrive`) |
-| `gdrive-mount set-client` | passa a un client_id Google tuo (vedi sotto) |
-| `gdrive-mount enable` | crea i servizi e monta, se l'account è in Account online |
-| `gdrive-mount disable` | smonta e disattiva i servizi |
-| `gdrive-mount status` | mostra lo stato |
-| `gdrive-mount uninstall` | rimuove tutto, vedi sotto |
+| `gdrive-fedora-mount setup` | connects rclone to your Google account (remote `gdrive`) |
+| `gdrive-fedora-mount set-client` | switches to your own Google client_id (see below) |
+| `gdrive-fedora-mount enable` | creates the services and mounts, if the account is in Online Accounts |
+| `gdrive-fedora-mount disable` | unmounts and disables the services |
+| `gdrive-fedora-mount status` | shows the status |
+| `gdrive-fedora-mount uninstall` | removes everything, see below |
 
-Si possono cambiare account, nome del remote e cartella con `GDRIVE_ACCOUNT`, `GDRIVE_REMOTE` e
-`GDRIVE_DIR`.
+Account, remote name and folder can be changed with `GDRIVE_ACCOUNT`, `GDRIVE_REMOTE` and
+`GDRIVE_DIR`. The tool's messages are in Italian for now.
 
-## Disinstallazione senza residui
+## Clean uninstall
 
 ```bash
-gdrive-mount uninstall
+gdrive-fedora-mount uninstall
 ```
 
-Rimuove i servizi, la cache di rclone per questo remote, la cartella `~/GoogleDrive` (solo se
-vuota: i tuoi file non vengono mai cancellati), lo script stesso e, se confermi, l'autorizzazione di
-rclone. Se rclone non ti serve per altro:
+Removes the services, rclone's cache for this remote, `~/GoogleDrive` (only if empty: your files
+are never deleted), the script itself and, if you confirm, rclone's authorization. If you don't
+need rclone for anything else:
 
 ```bash
 sudo dnf remove rclone
 ```
 
-## Client ID proprio (consigliato)
+## Your own client ID (recommended)
 
-rclone usa per default un client_id Google condiviso tra tutti i suoi utenti, che è in via di ritiro
-e smetterà di funzionare. Per non restare senza accesso, crea un client OAuth tuo seguendo
-[la guida di rclone](https://rclone.org/drive/#making-your-own-client-id) (Google Cloud Console →
-API Google Drive → credenziali "App desktop"), poi:
+By default rclone uses a Google client_id shared by all its users, which is being retired and will
+stop working. To avoid losing access, create your own OAuth client following
+[rclone's guide](https://rclone.org/drive/#making-your-own-client-id) (Google Cloud Console →
+Google Drive API → "Desktop app" credentials), then:
 
 ```bash
-gdrive-mount set-client
+gdrive-fedora-mount set-client
 ```
 
-Chiede client ID e secret (il secret non viene mostrato), rifà l'autorizzazione nel browser e
-riavvia il montaggio. Per una configurazione nuova puoi anche usare
-`GDRIVE_CLIENT_ID=... GDRIVE_CLIENT_SECRET=... gdrive-mount setup`.
+It asks for the client ID and secret (the secret is not echoed), re-authorizes in the browser and
+restarts the mount. For a new setup you can also use
+`GDRIVE_CLIENT_ID=... GDRIVE_CLIENT_SECRET=... gdrive-fedora-mount setup`.
 
-## Note
+## Upgrading from gdrive-mount
 
-- I documenti Google (Docs, Fogli, Presentazioni) compaiono come file `.docx`, `.xlsx`, `.pptx`.
-- La cache locale usa al massimo 5 GB e si svuota dopo 24 ore.
-- Per revocare l'accesso anche lato Google: myaccount.google.com → Sicurezza → App di terze parti.
+Up to version 0.2 the tool was called `gdrive-mount`. Install the new version and run
+`gdrive-fedora-mount enable`: it removes the old services and script automatically.
 
-## Test
+## Notes
+
+- Google Docs, Sheets and Slides show up as `.docx`, `.xlsx` and `.pptx` files.
+- The local cache uses at most 5 GB and expires after 24 hours.
+- To revoke access on Google's side too: myaccount.google.com → Security → Third-party apps.
+
+## Tests
 
 ```bash
 bash tests/run.sh
 ```
 
-I test non usano la rete né il tuo account: rclone e systemctl vengono sostituiti da comandi finti
-in una home temporanea, e si verifica il legame con Account online e che dopo `uninstall` la home sia identica a prima.
+The tests use neither the network nor your account: rclone and systemctl are replaced by fakes in a
+temporary home. They check the Online Accounts link, the upgrade from the old name, and that after
+`uninstall` the home is exactly as before.
 
-## Licenza
+## License
 
 [MIT](LICENSE)
