@@ -97,3 +97,7 @@ bash tests/run.sh
 
 I test non usano la rete né il tuo account: rclone e systemctl vengono sostituiti da comandi finti
 in una home temporanea, e si verifica il legame con Account online e che dopo `uninstall` la home sia identica a prima.
+
+## Licenza
+
+[MIT](LICENSE)
