@@ -81,7 +81,15 @@ cmd_setup() {
         msg "Il remote '$REMOTE' esiste già."
     else
         msg "Si aprirà il browser per autorizzare rclone ad accedere a Google Drive."
-        rclone config create "$REMOTE" drive scope=drive
+        local opts=(scope=drive)
+        # Il client_id condiviso di rclone viene ritirato: meglio usarne uno proprio
+        if [[ -n "${GDRIVE_CLIENT_ID:-}" ]]; then
+            opts+=("client_id=$GDRIVE_CLIENT_ID" "client_secret=${GDRIVE_CLIENT_SECRET:-}")
+        else
+            msg "Nota: senza GDRIVE_CLIENT_ID si usa il client_id condiviso di rclone, in via di ritiro (vedi README)."
+        fi
+        # rclone stampa la configurazione col token: non deve finire nel terminale
+        rclone config create "$REMOTE" drive "${opts[@]}" >/dev/null
     fi
     rclone lsd "$REMOTE:" --max-depth 1 >/dev/null && msg "Connessione a Google Drive riuscita."
 }
