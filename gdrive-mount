@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# gdrive-mount: monta Google Drive in una cartella con rclone e systemd --user.
+# Pensato per Fedora 44+, dove gvfs non include più il backend Google Drive.
+set -euo pipefail
+
+VERSION="0.1.0"
+REMOTE="${GDRIVE_REMOTE:-gdrive}"
+MOUNT_DIR="${GDRIVE_DIR:-$HOME/GoogleDrive}"
+UNIT_NAME="gdrive-mount.service"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+UNIT_FILE="$UNIT_DIR/$UNIT_NAME"
+BOOKMARKS="${XDG_CONFIG_HOME:-$HOME/.config}/gtk-3.0/bookmarks"
+BOOKMARK_LINE="file://$MOUNT_DIR Google Drive"
+RCLONE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/rclone"
+
+msg() { printf '%s\n' "$*"; }
+die() { printf 'Errore: %s\n' "$*" >&2; exit 1; }
+
+ask() {
+    # ask "domanda" -> 0 se l'utente risponde sì; con ASSUME_YES=1 risponde sì da solo
+    [[ "${ASSUME_YES:-0}" == 1 ]] && return 0
+    local reply
+    read -r -p "$1 [s/N] " reply || return 1
+    [[ "$reply" =~ ^[sSyY] ]]
+}
+
+need_rclone() {
+    command -v rclone >/dev/null 2>&1 && return 0
+    die "rclone non è installato. Installalo con: sudo dnf install rclone"
+}
+
+remote_exists() {
+    rclone listremotes 2>/dev/null | grep -qx "$REMOTE:"
+}
+
+write_unit() {
+    mkdir -p "$UNIT_DIR"
+    cat > "$UNIT_FILE" <<EOF
+[Unit]
+Description=Google Drive montato in $MOUNT_DIR (rclone)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/mkdir -p $MOUNT_DIR
+ExecStart=$(command -v rclone) mount $REMOTE: $MOUNT_DIR --vfs-cache-mode full --vfs-cache-max-size 5G --vfs-cache-max-age 24h --dir-cache-time 5m --poll-interval 1m
+ExecStop=/usr/bin/fusermount3 -uz $MOUNT_DIR
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+add_bookmark() {
+    mkdir -p "$(dirname "$BOOKMARKS")"
+    touch "$BOOKMARKS"
+    grep -qxF "$BOOKMARK_LINE" "$BOOKMARKS" || printf '%s\n' "$BOOKMARK_LINE" >> "$BOOKMARKS"
+}
+
+remove_bookmark() {
+    [[ -f "$BOOKMARKS" ]] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    grep -vxF "$BOOKMARK_LINE" "$BOOKMARKS" > "$tmp" || true
+    cat "$tmp" > "$BOOKMARKS"
+    rm -f "$tmp"
+}
+
+unmount_dir() {
+    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+        fusermount3 -uz "$MOUNT_DIR" || true
+    fi
+}
+
+cmd_setup() {
+    need_rclone
+    if remote_exists; then
+        msg "Il remote '$REMOTE' esiste già."
+    else
+        msg "Si aprirà il browser per autorizzare rclone ad accedere a Google Drive."
+        rclone config create "$REMOTE" drive scope=drive
+    fi
+    rclone lsd "$REMOTE:" --max-depth 1 >/dev/null && msg "Connessione a Google Drive riuscita."
+}
+
+cmd_enable() {
+    need_rclone
+    remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-mount setup"
+    mkdir -p "$MOUNT_DIR"
+    write_unit
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$UNIT_NAME"
+    add_bookmark
+    msg "Google Drive è montato in $MOUNT_DIR e verrà montato a ogni accesso."
+}
+
+cmd_disable() {
+    if [[ -f "$UNIT_FILE" ]]; then
+        systemctl --user disable --now "$UNIT_NAME" || true
+    fi
+    unmount_dir
+    remove_bookmark
+    msg "Montaggio automatico disattivato."
+}
+
+cmd_status() {
+    msg "remote:     $REMOTE ($(command -v rclone >/dev/null && remote_exists && echo configurato || echo non configurato))"
+    msg "cartella:   $MOUNT_DIR ($(mountpoint -q "$MOUNT_DIR" 2>/dev/null && echo montata || echo non montata))"
+    if [[ -f "$UNIT_FILE" ]]; then
+        msg "servizio:   $(systemctl --user is-enabled "$UNIT_NAME" 2>/dev/null || true), $(systemctl --user is-active "$UNIT_NAME" 2>/dev/null || true)"
+    else
+        msg "servizio:   non installato"
+    fi
+}
+
+cmd_uninstall() {
+    cmd_disable
+    if [[ -f "$UNIT_FILE" ]]; then
+        rm -f "$UNIT_FILE"
+        systemctl --user daemon-reload
+        systemctl --user reset-failed "$UNIT_NAME" 2>/dev/null || true
+    fi
+
+    # La cartella di montaggio si toglie solo se è vuota: non cancello mai file dell'utente.
+    if [[ -d "$MOUNT_DIR" ]]; then
+        rmdir "$MOUNT_DIR" 2>/dev/null || msg "Attenzione: $MOUNT_DIR non è vuota, la lascio dov'è."
+    fi
+
+    # Cache VFS di rclone per questo remote
+    rm -rf "$RCLONE_CACHE/vfs/$REMOTE" "$RCLONE_CACHE/vfsMeta/$REMOTE"
+    rmdir "$RCLONE_CACHE/vfs" "$RCLONE_CACHE/vfsMeta" "$RCLONE_CACHE" 2>/dev/null || true
+
+    if command -v rclone >/dev/null 2>&1 && remote_exists; then
+        if ask "Rimuovere anche l'autorizzazione di rclone a Google Drive (remote '$REMOTE')?"; then
+            rclone config delete "$REMOTE"
+            local conf
+            conf="$(rclone config file 2>/dev/null | tail -n1)"
+            # Se il file di configurazione è rimasto vuoto, lo tolgo insieme alla sua cartella
+            if [[ -f "$conf" && ! -s "$conf" ]]; then
+                rm -f "$conf"
+                rmdir "$(dirname "$conf")" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    local self
+    self="$(readlink -f "$0")"
+    if [[ "$self" == "$HOME/.local/bin/gdrive-mount" ]]; then
+        rm -f "$self"
+        msg "Rimosso $self."
+    fi
+
+    msg "Disinstallazione completata."
+    if command -v rclone >/dev/null 2>&1; then
+        msg "rclone è ancora installato. Se non ti serve più: sudo dnf remove rclone"
+    fi
+}
+
+usage() {
+    cat <<EOF
+gdrive-mount $VERSION - Google Drive come cartella su Fedora (rclone + systemd)
+
+Uso: gdrive-mount <comando>
+
+Comandi:
+  setup       collega rclone al tuo account Google (si apre il browser)
+  enable      monta Google Drive in $MOUNT_DIR e lo rimonta a ogni accesso
+  disable     smonta e disattiva il montaggio automatico
+  status      mostra lo stato
+  uninstall   rimuove servizio, segnalibro, cache e (a scelta) l'autorizzazione
+
+Variabili: GDRIVE_REMOTE (predefinito: gdrive), GDRIVE_DIR (predefinito: ~/GoogleDrive)
+EOF
+}
+
+case "${1:-}" in
+    setup) cmd_setup ;;
+    enable) cmd_enable ;;
+    disable) cmd_disable ;;
+    status) cmd_status ;;
+    uninstall) cmd_uninstall ;;
+    -h|--help|help|"") usage ;;
+    --version) msg "$VERSION" ;;
+    *) usage >&2; exit 2 ;;
+esac
