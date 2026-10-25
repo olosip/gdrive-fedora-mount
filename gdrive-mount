@@ -94,6 +94,24 @@ cmd_setup() {
     rclone lsd "$REMOTE:" --max-depth 1 >/dev/null && msg "Connessione a Google Drive riuscita."
 }
 
+cmd_set_client() {
+    need_rclone
+    remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-mount setup"
+    local id secret
+    read -r -p "Client ID: " id
+    # Il secret non viene mostrato né salvato nella cronologia della shell
+    read -r -s -p "Client secret: " secret
+    echo
+    [[ -n "$id" && -n "$secret" ]] || die "client ID e secret sono entrambi obbligatori"
+    msg "Si aprirà il browser: accedi di nuovo e autorizza la tua app."
+    # update rifà anche l'autorizzazione OAuth col nuovo client; l'output contiene il token
+    rclone config update "$REMOTE" client_id "$id" client_secret "$secret" >/dev/null
+    if [[ -f "$UNIT_FILE" ]]; then
+        systemctl --user restart "$UNIT_NAME"
+    fi
+    rclone lsd "$REMOTE:" --max-depth 1 >/dev/null && msg "Ora rclone usa il tuo client_id."
+}
+
 cmd_enable() {
     need_rclone
     remote_exists || die "remote '$REMOTE' non configurato. Esegui prima: gdrive-mount setup"
@@ -175,6 +193,7 @@ Uso: gdrive-mount <comando>
 
 Comandi:
   setup       collega rclone al tuo account Google (si apre il browser)
+  set-client  passa a un client_id Google tuo (chiede ID e secret)
   enable      monta Google Drive in $MOUNT_DIR e lo rimonta a ogni accesso
   disable     smonta e disattiva il montaggio automatico
   status      mostra lo stato
@@ -186,6 +205,7 @@ EOF
 
 case "${1:-}" in
     setup) cmd_setup ;;
+    set-client) cmd_set_client ;;
     enable) cmd_enable ;;
     disable) cmd_disable ;;
     status) cmd_status ;;

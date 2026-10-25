@@ -24,7 +24,7 @@ case "$1" in
         case "$2" in
             create) mkdir -p "$(dirname "$conf")"; printf '[%s]\ntype = drive\n' "$3" >> "$conf" ;;
             delete) : > "$conf" ;;
-            file) echo "Configuration file is stored at:"; echo "$conf" ;;
+            update) printf '%s = %s\n%s = %s\n' "$4" "$5" "$6" "$7" >> "$conf" ;;            file) echo "Configuration file is stored at:"; echo "$conf" ;;
         esac ;;
     lsd) exit 0 ;;
 esac
@@ -56,6 +56,11 @@ grep -qxF "file://$HOME/GoogleDrive Google Drive" "$HOME/.config/gtk-3.0/bookmar
 [[ "$(grep -c GoogleDrive "$HOME/.config/gtk-3.0/bookmarks")" == 1 ]] || fail "segnalibro duplicato"
 grep -q "enable --now gdrive-mount.service" "$work/calls" || fail "servizio non abilitato"
 "$gdm" status >/dev/null
+
+printf 'mio-id\nmio-secret\n' | "$gdm" set-client >/dev/null 2>&1
+grep -qx 'client_id = mio-id' "$HOME/.config/rclone/rclone.conf" || fail "client_id non salvato"
+grep -qx 'client_secret = mio-secret' "$HOME/.config/rclone/rclone.conf" || fail "client_secret non salvato"
+grep -q "restart gdrive-mount.service" "$work/calls" || fail "servizio non riavviato"
 
 mkdir -p "$HOME/.cache/rclone/vfs/gdrive/x"
 ASSUME_YES=1 "$gdm" uninstall >/dev/null

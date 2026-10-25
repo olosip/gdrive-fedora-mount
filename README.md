@@ -58,14 +58,12 @@ e smetterà di funzionare. Per non restare senza accesso, crea un client OAuth t
 API Google Drive → credenziali "App desktop"), poi:
 
 ```bash
-# nuova configurazione
-GDRIVE_CLIENT_ID=... GDRIVE_CLIENT_SECRET=... gdrive-mount setup
-
-# oppure, se il remote esiste già
-rclone config update gdrive client_id=... client_secret=...
-rclone config reconnect gdrive:
-systemctl --user restart gdrive-mount.service
+gdrive-mount set-client
 ```
+
+Chiede client ID e secret (il secret non viene mostrato), rifà l'autorizzazione nel browser e
+riavvia il montaggio. Per una configurazione nuova puoi anche usare
+`GDRIVE_CLIENT_ID=... GDRIVE_CLIENT_SECRET=... gdrive-mount setup`.
 
 ## Note
 
